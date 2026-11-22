@@ -137,7 +137,7 @@ def main():
     for rss_url in RSS_URLS:
         feed = feedparser.parse(rss_url)
 
-        for item in feed.entries[:5]:
+        for item in feed.entries[:10]:
 
             link = item.get("link", "")
             title = item.get("title", "خبر ورزشی")
