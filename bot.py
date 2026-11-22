@@ -5,49 +5,65 @@ import re
 import html
 import requests
 import feedparser
+from datetime import datetime, timezone, timedelta
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]
 
 RSS_URLS = [
-    # BBC - اخبار ورزشی و فوتبال
     "https://feeds.bbci.co.uk/sport/rss.xml",
     "https://feeds.bbci.co.uk/sport/football/rss.xml",
     "https://feeds.bbci.co.uk/sport/football/premier-league/rss.xml",
     "https://feeds.bbci.co.uk/sport/football/champions-league/rss.xml",
-
-    # اخبار استقلال و پرسپولیس
-    "https://news.google.com/rss/search?q=%D8%A7%D8%B3%D8%AA%D9%82%D9%84%D8%A7%D9%84+OR+%D9%BE%D8%B1%D8%B3%D9%BE%D9%88%D9%84%DB%8C%D8%B3&hl=fa&gl=IR&ceid=IR:fa",
-
-    # فوتبال ایران
-    "https://news.google.com/rss/search?q=%D9%81%D9%88%D8%AA%D8%A8%D8%A7%D9%84+%D8%A7%DB%8C%D8%B1%D8%A7%D9%86&hl=fa&gl=IR&ceid=IR:fa",
-
-    # لیگ برتر ایران
-    "https://news.google.com/rss/search?q=%D9%84%DB%8C%DA%AF+%D8%A8%D8%B1%D8%AA%D8%B1+%D8%A7%DB%8C%D8%B1%D8%A7%D9%86&hl=fa&gl=IR&ceid=IR:fa",
-
-    # اخبار ورزشی جهان
-    "https://news.google.com/rss/search?q=%D8%A7%D8%AE%D8%A8%D8%A7%D8%B1+%D9%88%D8%B1%D8%B2%D8%B4&hl=fa&gl=IR&ceid=IR:fa",
+    "https://news.google.com/rss/search?q=استقلال+OR+پرسپولیس&hl=fa&gl=IR&ceid=IR:fa",
+    "https://news.google.com/rss/search?q=فوتبال+ایران&hl=fa&gl=IR&ceid=IR:fa",
+    "https://news.google.com/rss/search?q=لیگ+برتر+ایران&hl=fa&gl=IR&ceid=IR:fa",
+    "https://news.google.com/rss/search?q=اخبار+ورزش&hl=fa&gl=IR&ceid=IR:fa",
+    "https://news.google.com/rss/search?q=فوتبال+جهان&hl=fa&gl=IR&ceid=IR:fa",
 ]
 
 SENT_FILE = "sent_news.json"
-
-# حداکثر تعداد پست در هر اجرا
 MAX_POSTS_PER_RUN = 3
+MAX_AGE_HOURS = 48
+
+KEYWORDS = {
+    "استقلال": ["استقلال", "esteghlal"],
+    "پرسپولیس": ["پرسپولیس", "persepolis"],
+    "فوتبال ایران": ["لیگ برتر", "تیم ملی ایران", "فوتبال ایران", "جام حذفی", "تراکتور", "سپاهان"],
+    "فوتبال اروپا": ["لیگ برتر انگلیس", "premier league", "لالیگا", "la liga", "سری آ", "serie a", "بوندسلیگا", "bundesliga"],
+    "لیگ قهرمانان": ["لیگ قهرمانان", "champions league", "ucl"],
+    "بسکتبال": ["بسکتبال", "basketball", "nba"],
+    "والیبال": ["والیبال", "volleyball"],
+    "تنیس": ["تنیس", "tennis"],
+    "ورزش جهان": ["فوتبال", "ورزش", "sport", "football"],
+}
+
+BREAKING_WORDS = [
+    "فوری", "لحظاتی پیش", "رسمی شد", "اخراج شد",
+    "مصدومیت", "قهرمان شد", "صعود کرد", "شکست خورد",
+    "breaking", "official", "injury", "sacked"
+]
 
 
 def load_sent():
     if os.path.exists(SENT_FILE):
-        with open(SENT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(SENT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
     return []
 
 
 def save_sent(sent):
     with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(sent[-500:], f, ensure_ascii=False)
+        json.dump(sent[-1000:], f, ensure_ascii=False)
 
 
 def translate_to_farsi(text):
+    if not text:
+        return ""
+
     try:
         response = requests.get(
             "https://translate.googleapis.com/translate_a/single",
@@ -60,43 +76,38 @@ def translate_to_farsi(text):
             },
             timeout=20
         )
-
         response.raise_for_status()
         data = response.json()
-
-        translated = "".join(
-            part[0] for part in data[0] if part[0]
-        )
-
-        return translated if translated else text
-
+        translated = "".join(part[0] for part in data[0] if part[0])
+        return translated or text
     except Exception:
         return text
 
 
+def clean_text(text):
+    text = re.sub(r"<[^>]+>", "", text or "")
+    return html.unescape(text).strip()
+
+
 def get_image(item):
-    # تصاویر Media RSS
     for media in item.get("media_content", []):
         if media.get("url"):
             return media["url"]
 
-    # Thumbnail
     for thumb in item.get("media_thumbnail", []):
         if thumb.get("url"):
             return thumb["url"]
 
-    # تصاویر ضمیمه
     for enclosure in item.get("enclosures", []):
         if enclosure.get("type", "").startswith("image"):
             return enclosure.get("href") or enclosure.get("url")
 
-    # استخراج تصویر از محتوای HTML
-    contents = item.get("content", [])
-
-    for content in contents:
-        value = content.get("value", "")
-        match = re.search(r'<img[^>]+src=["\']([^"\']+)', value)
-
+    content = item.get("content", [])
+    for part in content:
+        match = re.search(
+            r'<img[^>]+src=["\']([^"\']+)',
+            part.get("value", "")
+        )
         if match:
             return html.unescape(match.group(1))
 
@@ -109,22 +120,65 @@ def get_image(item):
     return None
 
 
-def send_news(title, link, image_url=None):
+def get_category(title):
+    text = title.lower()
 
+    for category, words in KEYWORDS.items():
+        if any(word.lower() in text for word in words):
+            return category
+
+    return "ورزش جهان"
+
+
+def is_breaking(title):
+    text = title.lower()
+    return any(word.lower() in text for word in BREAKING_WORDS)
+
+
+def get_date(item):
+    try:
+        if item.get("published_parsed"):
+            return datetime(*item.published_parsed[:6], tzinfo=timezone.utc)
+
+        if item.get("updated_parsed"):
+            return datetime(*item.updated_parsed[:6], tzinfo=timezone.utc)
+    except Exception:
+        pass
+
+    return None
+
+
+def is_recent(item):
+    date = get_date(item)
+
+    if date is None:
+        return True
+
+    now = datetime.now(timezone.utc)
+    return now - date <= timedelta(hours=MAX_AGE_HOURS)
+
+
+def send_news(title, link, category, breaking, image_url=None):
     persian_title = translate_to_farsi(title)
 
+    if breaking:
+        headline = "🚨 <b>خبر فوری</b>\n\n"
+    else:
+        headline = ""
+
     message = (
-        "⚽ <b>اسپورتینو | اخبار ورزشی</b>\n\n"
-        f"📰 {html.escape(persian_title)}\n\n"
-        f'🔗 <a href="{html.escape(link, quote=True)}">'
-        "مشاهده منبع خبر</a>\n\n"
+        "⚽ <b>اسپورتینو | اخبار ورزشی</b>\n"
         "━━━━━━━━━━━━━━\n"
-        "🏆 اخبار روز ورزش"
+        f"🏷️ <b>دسته:</b> {html.escape(category)}\n\n"
+        f"{headline}"
+        f"📰 {html.escape(persian_title)}\n\n"
+        f'<a href="{html.escape(link, quote=True)}">🔗 مشاهده منبع خبر</a>\n\n'
+        "━━━━━━━━━━━━━━\n"
+        "📲 با اسپورتینو همراه باشید"
     )
 
     base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-    # ارسال عکس و کپشن
     if image_url:
         try:
             response = requests.post(
@@ -144,7 +198,6 @@ def send_news(title, link, image_url=None):
         except Exception:
             pass
 
-    # اگر عکس ارسال نشد، متن ارسال شود
     response = requests.post(
         f"{base_url}/sendMessage",
         data={
@@ -161,20 +214,18 @@ def send_news(title, link, image_url=None):
 
 
 def main():
-
     sent = load_sent()
     news_list = []
 
-    # جمع‌آوری خبرها از تمام منابع
-    for rss_url in RSS_URLS:
+    print("Checking news sources...")
 
+    for rss_url in RSS_URLS:
         try:
             feed = feedparser.parse(rss_url)
 
             for item in feed.entries:
-
                 link = item.get("link", "")
-                title = item.get("title", "")
+                title = clean_text(item.get("title", ""))
 
                 if not link or not title:
                     continue
@@ -182,17 +233,21 @@ def main():
                 if link in sent:
                     continue
 
+                if not is_recent(item):
+                    continue
+
                 news_list.append({
                     "title": title,
                     "link": link,
                     "image": get_image(item),
-                    "date": item.get("published_parsed")
+                    "date": get_date(item),
+                    "category": get_category(title),
+                    "breaking": is_breaking(title)
                 })
 
-        except Exception:
-            continue
+        except Exception as e:
+            print("RSS error:", e)
 
-    # حذف خبرهای تکراری
     unique_news = []
     seen_links = set()
 
@@ -201,25 +256,28 @@ def main():
             seen_links.add(news["link"])
             unique_news.append(news)
 
-    # جدیدترین خبرها در اولویت
     unique_news.sort(
-        key=lambda x: x["date"] or (0, 0, 0, 0, 0, 0, 0, 0, 0),
+        key=lambda x: (
+            x["breaking"],
+            x["date"] or datetime.min.replace(tzinfo=timezone.utc)
+        ),
         reverse=True
     )
 
-    # ارسال حداکثر ۳ خبر در هر اجرا
     new_sent = []
 
     for news in unique_news[:MAX_POSTS_PER_RUN]:
-
         try:
             send_news(
                 news["title"],
                 news["link"],
+                news["category"],
+                news["breaking"],
                 news["image"]
             )
 
             new_sent.append(news["link"])
+            print("Posted:", news["title"])
 
         except Exception as e:
             print("Send error:", e)
@@ -227,6 +285,7 @@ def main():
     save_sent(sent + new_sent)
 
     print("News sent:", len(new_sent))
+    print("Bot finished successfully.")
 
 
 if __name__ == "__main__":
