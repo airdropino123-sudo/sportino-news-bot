@@ -156,29 +156,54 @@ def is_recent(item):
 
     now = datetime.now(timezone.utc)
     return now - date <= timedelta(hours=MAX_AGE_HOURS)
-
-
 def send_news(title, link, category, breaking, image_url=None):
+
     persian_title = translate_to_farsi(title)
 
+    # تیتر کوتاه و خوانا
+    persian_title = persian_title[:350]
+
+    # هشتگ متناسب با دسته خبر
+    hashtags = {
+        "استقلال": "#استقلال #Esteghlal",
+        "پرسپولیس": "#پرسپولیس #Persepolis",
+        "فوتبال ایران": "#فوتبال_ایران",
+        "فوتبال اروپا": "#فوتبال_اروپا",
+        "لیگ قهرمانان": "#لیگ_قهرمانان",
+        "بسکتبال": "#بسکتبال",
+        "والیبال": "#والیبال",
+        "تنیس": "#تنیس",
+        "ورزش جهان": "#ورزش #فوتبال",
+    }
+
+    tags = hashtags.get(category, "#فوتبال #اخبار_ورزشی")
+
+    # نشان خبر فوری
     if breaking:
-        headline = "🚨 <b>خبر فوری</b>\n\n"
+        top = "🚨 <b>خبر فوری | اسپورتینو</b>\n\n"
     else:
-        headline = ""
+        top = "⚽ <b>اسپورتینو | اخبار ورزشی</b>\n\n"
 
     message = (
-        "⚽ <b>اسپورتینو | اخبار ورزشی</b>\n"
-        "━━━━━━━━━━━━━━\n"
-        f"🏷️ <b>دسته:</b> {html.escape(category)}\n\n"
-        f"{headline}"
-        f"📰 {html.escape(persian_title)}\n\n"
-        f'<a href="{html.escape(link, quote=True)}">🔗 مشاهده منبع خبر</a>\n\n'
-        "━━━━━━━━━━━━━━\n"
-        "📲 با اسپورتینو همراه باشید"
+        top
+        + "━━━━━━━━━━━━━━\n"
+        + f"🏷️ <b>دسته:</b> {html.escape(category)}\n\n"
+        + f"🔥 <b>{html.escape(persian_title)}</b>\n\n"
+        + "━━━━━━━━━━━━━━\n"
+        + "📌 <b>جزئیات خبر:</b>\n"
+        + f"{html.escape(persian_title)}\n\n"
+        + f'🔗 <a href="{html.escape(link, quote=True)}">مشاهده منبع خبر</a>\n\n'
+        + "━━━━━━━━━━━━━━\n"
+        + "⚡ <b>سریع‌تر از همه، باخبر شو!</b>\n"
+        + "🌍 پوشش اخبار فوتبال ایران و جهان\n\n"
+        + "📡 <b>عضویت در اسپورتینو:</b>\n"
+        + "👉 @SportinoNews\n\n"
+        + f"{tags}"
     )
 
     base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+    # ارسال همراه تصویر
     if image_url:
         try:
             response = requests.post(
@@ -195,9 +220,10 @@ def send_news(title, link, category, breaking, image_url=None):
             response.raise_for_status()
             return True
 
-        except Exception:
-            pass
+        except Exception as e:
+            print("Photo failed, sending text:", e)
 
+    # ارسال بدون تصویر
     response = requests.post(
         f"{base_url}/sendMessage",
         data={
@@ -211,82 +237,3 @@ def send_news(title, link, category, breaking, image_url=None):
 
     response.raise_for_status()
     return True
-
-
-def main():
-    sent = load_sent()
-    news_list = []
-
-    print("Checking news sources...")
-
-    for rss_url in RSS_URLS:
-        try:
-            feed = feedparser.parse(rss_url)
-
-            for item in feed.entries:
-                link = item.get("link", "")
-                title = clean_text(item.get("title", ""))
-
-                if not link or not title:
-                    continue
-
-                if link in sent:
-                    continue
-
-                if not is_recent(item):
-                    continue
-
-                news_list.append({
-                    "title": title,
-                    "link": link,
-                    "image": get_image(item),
-                    "date": get_date(item),
-                    "category": get_category(title),
-                    "breaking": is_breaking(title)
-                })
-
-        except Exception as e:
-            print("RSS error:", e)
-
-    unique_news = []
-    seen_links = set()
-
-    for news in news_list:
-        if news["link"] not in seen_links:
-            seen_links.add(news["link"])
-            unique_news.append(news)
-
-    unique_news.sort(
-        key=lambda x: (
-            x["breaking"],
-            x["date"] or datetime.min.replace(tzinfo=timezone.utc)
-        ),
-        reverse=True
-    )
-
-    new_sent = []
-
-    for news in unique_news[:MAX_POSTS_PER_RUN]:
-        try:
-            send_news(
-                news["title"],
-                news["link"],
-                news["category"],
-                news["breaking"],
-                news["image"]
-            )
-
-            new_sent.append(news["link"])
-            print("Posted:", news["title"])
-
-        except Exception as e:
-            print("Send error:", e)
-
-    save_sent(sent + new_sent)
-
-    print("News sent:", len(new_sent))
-    print("Bot finished successfully.")
-
-
-if __name__ == "__main__":
-    main()
